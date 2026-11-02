@@ -1,0 +1,37 @@
+# Secretos locales (no versionar)
+.streamlit/secrets.toml
+.streamlit/secrets.toml.*
+!.streamlit/secrets.toml.example
+.env
+.env.*
+!.env.example
+
+# Entornos y bytecode
+.venv/
+__pycache__/
+*.py[cod]
+
+# Credenciales y claves privadas
+credentials/
+credenciales/
+secrets/
+credentials*.json
+*credentials*.json
+client_secret*.json
+service_account*.json
+service-account*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Datos locales y archivos generados
+/documentos_fuente/*
+!/documentos_fuente/EXPEDIENTE_VIAL_DEMOSTRACION.pdf
+pruebas_ia/*_fragmentos.json
+!/pruebas_ia/RQ-DEMO-01_EV-PUBLICO-01_fragmentos.json
+pruebas_ia/decisiones/
+superados/
+*.bak
+*.tmp
+evidencias_temporal.csv

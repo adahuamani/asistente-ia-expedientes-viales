@@ -1,0 +1,179 @@
+"""Pruebas de la demostración pública. Ejecutar desde la raíz con unittest."""
+import copy
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from uuid import uuid4
+import unittest
+from unittest.mock import Mock, patch
+
+from streamlit.testing.v1.errors import AppTestError
+from streamlit.testing.v1 import AppTest
+from pruebas_ia import revision_documental as ui
+
+v = ui.verificador
+
+
+def respuesta_simulada():
+    fid = f"FR-{v.SHA256_ESPERADO}-P0002"
+    return {
+        "requisito_id": v.REQUISITO_ID, "estado_documental_propuesto": "Documento identificado",
+        "explicacion": "El texto de la página sintética contiene el encabezado citado.",
+        "fragmentos_citados": [fid],
+        "citas_textuales": [{"fragmento_id": fid, "texto": "1.0 MEMORIA DESCRIPTIVA"}],
+        "informacion_faltante": [], "limitaciones": ["Solo dos páginas. Requiere revisión humana."],
+    }
+
+
+class ContextoTest(unittest.TestCase):
+    def test_integridad_y_alcance(self):
+        datos = v._leer_contexto(v.RAIZ)
+        self.assertEqual(len(datos["fragmentos"]), 3)
+        ids = [f["pagina_pdf"] for f in v.verificar_contexto().values()]
+        self.assertEqual(ids, [1, 2])
+        self.assertEqual(datos["evidencia_origen"]["archivo_fuente"], v.PDF_PUBLICO)
+
+    def test_hash_distinto(self):
+        with patch.object(Path, "read_bytes", return_value=b"PDF alterado en memoria"):
+            self.assertFalse(v.validar_respuesta(respuesta_simulada())["integridad_verificada"])
+
+    def test_tercera_pagina_alterada(self):
+        datos = v._leer_contexto(v.RAIZ)
+        datos["fragmentos"][2]["texto_extraido"] += "x"
+        with patch.object(v, "_leer_contexto", return_value=datos):
+            self.assertFalse(v.validar_respuesta(respuesta_simulada())["integridad_verificada"])
+
+    def test_pagina_no_autorizada(self):
+        propuesta = respuesta_simulada()
+        fid = f"FR-{v.SHA256_ESPERADO}-P0003"
+        propuesta.update(fragmentos_citados=[fid], citas_textuales=[{"fragmento_id":fid, "texto":"Continuación"}])
+        self.assertFalse(v.validar_respuesta(propuesta)["valida_tecnicamente"])
+
+
+class InterfazTest(unittest.TestCase):
+    def setUp(self):
+        self.destino = Path(self.enterContext(TemporaryDirectory(dir=v.RAIZ / "pruebas_ia")))
+        self.enterContext(patch.object(ui, "CARPETA_DECISIONES", self.destino))
+        sdk = Mock()
+        self.enterContext(patch.object(ui.conector, "_cargar_sdk", return_value=sdk))
+        self.llamada = sdk.Client.return_value.models.generate_content
+        self.propuesta = respuesta_simulada()
+        self.llamada.return_value = SimpleNamespace(text=json.dumps(self.propuesta),
+            candidates=[SimpleNamespace(finish_reason="STOP")])
+        self.at = AppTest.from_file(str(v.RAIZ / "app.py"), default_timeout=25)
+        self.password = uuid4().hex
+        self.at.secrets["DEMO_PASSWORD"] = self.password
+        self.at.secrets["GEMINI_API_KEY"] = uuid4().hex
+        self.at.run()
+        self.assertFalse(self.at.exception)
+        self.assertFalse(self.at.error)
+        self.assertTrue(any("9. Revisión documental" in w.value for w in self.at.subheader))
+        self.llamada.assert_not_called()
+
+    def autenticar(self, entrada=None):
+        self.at.text_input(key="ia_entrada").input(self.password if entrada is None else entrada)
+        next(b for b in self.at.button if b.label == "Habilitar análisis").click().run()
+        self.assertFalse(self.at.exception)
+        self.llamada.assert_not_called()
+
+    def test_incorrecta(self):
+        self.autenticar(uuid4().hex)
+        self.assertTrue(any("incorrecta" in x.value for x in self.at.warning))
+        self.assertTrue(self.at.button(key="ia_analizar").disabled)
+        with self.assertRaises(AppTestError):
+            self.at.button(key="ia_analizar").click()
+        self.llamada.assert_not_called()
+
+    def test_sin_password(self):
+        del self.at.secrets["DEMO_PASSWORD"]
+        self.at.run()
+        self.assertTrue(any("no está configurada" in x.value for x in self.at.warning))
+        self.assertTrue(self.at.button(key="ia_analizar").disabled)
+        self.assertTrue(any("PDF sintético" in x.label for x in self.at.get("download_button")))
+        with self.assertRaises(AppTestError):
+            self.at.button(key="ia_analizar").click()
+        self.llamada.assert_not_called()
+
+    def test_error_sin_reintento(self):
+        self.autenticar()
+        self.at.run()
+        self.assertFalse(self.at.button(key="ia_analizar").disabled)
+        self.llamada.assert_not_called()
+        self.llamada.side_effect = TimeoutError(self.password)
+        self.at.button(key="ia_analizar").click().run()
+        self.assertTrue(self.at.error)
+        self.assertNotIn(self.password, self.at.error[0].value)
+        self.assertTrue(self.at.button(key="ia_analizar").disabled)
+        with self.assertRaises(AppTestError):
+            self.at.button(key="ia_analizar").click()
+        self.at.run()
+        self.llamada.assert_called_once()
+
+    def test_sin_clave_no_usa_entorno(self):
+        del self.at.secrets["GEMINI_API_KEY"]
+        with patch.dict("os.environ", {"GEMINI_API_KEY": uuid4().hex}):
+            self.autenticar()
+            self.at.button(key="ia_analizar").click().run()
+        self.assertTrue(self.at.error)
+        self.llamada.assert_not_called()
+
+    def test_descargas_y_recarga(self):
+        self.at.selectbox(key="consulta_fuente_evidencia").select(v.EVIDENCIA_ID)
+        self.at.button(key="boton_ver_fuente").click().run()
+        etiquetas = [x.label for x in self.at.get("download_button")]
+        self.assertIn("Abrir o descargar documento fuente", etiquetas)
+        self.assertIn("Descargar PDF sintético de demostración", etiquetas)
+        self.assertIn("Descargar reporte preliminar en Word", etiquetas)
+        self.at.run()
+        self.assertFalse(self.at.error)
+        self.llamada.assert_not_called()
+
+    def decision(self, opcion):
+        self.autenticar()
+        self.at.button(key="ia_analizar").click().run()
+        self.assertTrue(any(x.value == "Pendiente de validación humana" for x in self.at.info))
+        self.assertIn("1.0 MEMORIA DESCRIPTIVA", [x.value for x in self.at.text])
+        enviado = json.loads(self.llamada.call_args.kwargs["contents"])
+        self.assertEqual([f["pagina_pdf"] for f in enviado["fragmentos"]], [1, 2])
+        self.assertTrue(self.at.button(key="ia_analizar").disabled)
+        with self.assertRaises(AppTestError):
+            self.at.button(key="ia_analizar").click()
+        aid = self.at.session_state["ia_analisis_id"]
+        self.at.radio(key=f"ia_decision_{aid}").set_value(opcion).run()
+        if opcion != "Aceptar":
+            self.at.button(key=f"ia_guardar_{aid}").click().run()
+            self.assertFalse(list(self.destino.iterdir()))
+            self.at.text_area(key=f"ia_obs_{aid}").input("Observación ficticia.")
+        if opcion == "Corregir":
+            self.at.selectbox(key=f"ia_estado_{aid}").select("Evidencia insuficiente")
+        self.at.button(key=f"ia_guardar_{aid}").click().run()
+        self.at.run()
+        self.assertFalse(self.at.exception)
+        archivos = list(self.destino.glob("*.json"))
+        self.assertEqual(len(archivos), 1)
+        registro = json.loads(archivos[0].read_text(encoding="utf-8"))
+        self.assertEqual(registro["propuesta_ia"], self.propuesta)
+        self.assertEqual(registro["decision_humana"], opcion)
+        self.assertEqual(registro["evidencia_origen"], v.EVIDENCIA_ID)
+        self.assertEqual(registro["documento"]["sha256"], v.SHA256_ESPERADO)
+        self.llamada.assert_called_once()
+
+    def test_aceptar(self):
+        self.decision("Aceptar")
+
+    def test_corregir(self):
+        self.decision("Corregir")
+
+    def test_rechazar(self):
+        self.decision("Rechazar")
+
+    def test_cita_inventada_bloqueada(self):
+        self.autenticar()
+        propuesta = copy.deepcopy(self.propuesta)
+        propuesta["citas_textuales"][0]["texto"] = "No es una cita literal"
+        self.llamada.return_value.text = json.dumps(propuesta)
+        self.at.button(key="ia_analizar").click().run()
+        self.assertTrue(any("verificación local" in e.value for e in self.at.error))
+        self.assertFalse(self.at.radio)
+        self.assertFalse(list(self.destino.iterdir()))

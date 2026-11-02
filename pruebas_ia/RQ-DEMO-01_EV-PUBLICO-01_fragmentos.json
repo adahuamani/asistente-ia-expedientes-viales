@@ -1,0 +1,108 @@
+{
+  "version_esquema": 1,
+  "paso": "111.14D",
+  "requisito": {
+    "requisito_id": "RQ-DEMO-01",
+    "componente": "Memoria descriptiva",
+    "requisito": "Identificar la memoria descriptiva del expediente",
+    "fuente_normativa": "No aplica (demostración)",
+    "estado_preliminar": "No evaluado",
+    "fuente_documental": "Sin asignar",
+    "ubicacion_evidencia": "Sin asignar",
+    "observacion": "Registro ficticio"
+  },
+  "evidencia_origen": {
+    "evidencia_id": "EV-PUBLICO-01",
+    "requisito_id": "RQ-DEMO-01",
+    "archivo_fuente": "EXPEDIENTE_VIAL_DEMOSTRACION.pdf",
+    "tipo_documento": "PDF",
+    "ubicacion": "Página 2 del PDF",
+    "evidencia_textual": "1.0 MEMORIA DESCRIPTIVA",
+    "origen_registro": "Demostración",
+    "validacion_especialista": "No validada"
+  },
+  "documento": {
+    "nombre_original": "EXPEDIENTE_VIAL_DEMOSTRACION.pdf",
+    "ruta_conservada_relativa": "documentos_fuente/EXPEDIENTE_VIAL_DEMOSTRACION.pdf",
+    "sha256": "751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9",
+    "bytes": 5180,
+    "paginas": 3
+  },
+  "extraccion": {
+    "biblioteca": "PyMuPDF",
+    "version": "1.28.2",
+    "metodo": "page.get_text(\"text\", sort=False)",
+    "fragmentacion": "Página íntegra",
+    "numeracion": "Página física, base 1",
+    "offsets": "Caracteres Unicode, fin exclusivo",
+    "ocr": false
+  },
+  "fragmentos": [
+    {
+      "fragmento_id": "FR-751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9-P0001",
+      "documento_original": "EXPEDIENTE_VIAL_DEMOSTRACION.pdf",
+      "documento_sha256": "751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9",
+      "pagina_pdf": 1,
+      "offset_inicio": 0,
+      "offset_fin_exclusivo": 277,
+      "texto_extraido": "EXPEDIENTES VIALES   /   DEMOSTRACIÓN\nPORTADA\nCaso ficticio para pruebas documentales\n01 / 03\nExpediente Técnico Vial\nde Demostración\nPROYECTO FICTICIO\nMejoramiento del camino vecinal\nSanta Rosa – El Mirador\nDOCUMENTO SINTÉTICO PARA PRUEBAS.\nNO CORRESPONDE A UN PROYECTO REAL.\n",
+      "estado_validacion": "No validada"
+    },
+    {
+      "fragmento_id": "FR-751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9-P0002",
+      "documento_original": "EXPEDIENTE_VIAL_DEMOSTRACION.pdf",
+      "documento_sha256": "751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9",
+      "pagina_pdf": 2,
+      "offset_inicio": 0,
+      "offset_fin_exclusivo": 973,
+      "texto_extraido": "EXPEDIENTES VIALES   /   DEMOSTRACIÓN\nMEMORIA\nCaso ficticio para pruebas documentales\n02 / 03\n1.0 MEMORIA DESCRIPTIVA\nMejoramiento del camino vecinal Santa Rosa – El Mirador\nAntecedentes\nEn el escenario ficticio, Santa Rosa y El Mirador son dos caseríos imaginarios conectados\npor una huella de tierra. Durante las lluvias simuladas, el agua se acumula en dos\ndepresiones del camino.\nObjetivo\nIlustrar cómo se describiría el mejoramiento del tránsito entre ambos caseríos mediante\nuna superficie de rodadura más regular y la evacuación del agua de lluvia.\nUbicación ficticia\nPara este ejercicio, el camino se sitúa en el distrito imaginario de Loma de Papel, dentro de\nla provincia inventada de Valle de Tiza. No se asignan coordenadas geográficas.\nIntervenciones y longitud\nEl tramo ficticio tiene una longitud de 5,20 km. Se propone, solo para la demostración,\nperfilar la plataforma, colocar una capa de afirmado y abrir cunetas en los sectores con\nacumulación de agua.\n",
+      "estado_validacion": "No validada"
+    },
+    {
+      "fragmento_id": "FR-751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9-P0003",
+      "documento_original": "EXPEDIENTE_VIAL_DEMOSTRACION.pdf",
+      "documento_sha256": "751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9",
+      "pagina_pdf": 3,
+      "offset_inicio": 0,
+      "offset_fin_exclusivo": 975,
+      "texto_extraido": "EXPEDIENTES VIALES   /   DEMOSTRACIÓN\nMEMORIA\nCaso ficticio para pruebas documentales\n03 / 03\nMemoria descriptiva\nContinuación   /   Parámetros ficticios del ejercicio\nCaracterísticas técnicas\nPara describir la sección de ejemplo se adopta un ancho de plataforma ficticio de 4,00 m y\nuna capa de afirmado de 0,15 m. Estas cifras son inventadas y no proceden de un cálculo\nde ingeniería.\nAlcance\nEl ejemplo comprende el perfilado y el afirmado del tramo ficticio y la descripción de sus\ncunetas. No incluye diseño de puentes, presupuesto de obra ni planos de ejecución.\nLimitaciones\nNo se realizaron levantamientos topográficos, conteos de tránsito ni ensayos de suelos.\nLos valores del ejercicio no pueden utilizarse para dimensionar, presupuestar o ejecutar\nuna obra.\nAdvertencia sobre cumplimiento normativo\nEste documento sintético no acredita cumplimiento normativo. No se ha evaluado su\nconformidad con normas del MTC ni se emite opinión técnica sobre un proyecto real.\n",
+      "estado_validacion": "No validada"
+    }
+  ],
+  "candidatos_revision": [
+    {
+      "fragmento_id": "FR-751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9-P0001",
+      "pagina_pdf": 1,
+      "requisito_id": "RQ-DEMO-01",
+      "motivo": "Portada y contexto del proyecto ficticio",
+      "coincidencias": [
+        {
+          "texto_literal": "Expediente Técnico Vial",
+          "inicio": 94,
+          "fin_exclusivo": 117
+        }
+      ],
+      "estado_validacion": "No validada"
+    },
+    {
+      "fragmento_id": "FR-751098bb3d5ab094c8709a9d3d1f3024f88eb0c3babf92edaf3a1ff4f1e962a9-P0002",
+      "pagina_pdf": 2,
+      "requisito_id": "RQ-DEMO-01",
+      "motivo": "Encabezado de la memoria descriptiva",
+      "coincidencias": [
+        {
+          "texto_literal": "1.0 MEMORIA DESCRIPTIVA",
+          "inicio": 94,
+          "fin_exclusivo": 117
+        }
+      ],
+      "estado_validacion": "No validada"
+    }
+  ],
+  "limitaciones": [
+    "Caso sintético. Solo P0001 y P0002 se autorizan para la consulta."
+  ],
+  "verificacion": {
+    "estado_evidencias": "No validadas"
+  }
+}
