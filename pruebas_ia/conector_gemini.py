@@ -107,9 +107,28 @@ def _codigo_http(error):
     return None
 
 
+def _clasificar_400(error):
+    cuerpo = getattr(error, "details", None)
+    if isinstance(cuerpo, dict):
+        cuerpo = cuerpo.get("error", cuerpo)
+    detalles = cuerpo.get("details") if isinstance(cuerpo, dict) else None
+    if isinstance(detalles, list):
+        for detalle in detalles:
+            if (isinstance(detalle, dict)
+                    and detalle.get("@type") == "type.googleapis.com/google.rpc.ErrorInfo"
+                    and detalle.get("reason") == "API_KEY_INVALID"):
+                return "clave_invalida", "Clave API no válida (API_KEY_INVALID)."
+    estado = getattr(error, "status", None)
+    if estado == "INVALID_ARGUMENT":
+        return "argumento_invalido", "Argumento no válido (INVALID_ARGUMENT)."
+    if estado == "FAILED_PRECONDITION":
+        return "precondicion", "Condición previa no cumplida (FAILED_PRECONDITION)."
+    return "solicitud_invalida", "Solicitud rechazada."
+
+
 def _clasificar_error(error, codigo):
     if codigo == 400:
-        return "solicitud_invalida", "Solicitud rechazada."
+        return _clasificar_400(error)
     if codigo == 401:
         return "autenticacion", "Autenticación rechazada."
     if codigo == 403:

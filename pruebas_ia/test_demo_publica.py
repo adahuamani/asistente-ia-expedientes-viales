@@ -82,6 +82,37 @@ class DiagnosticoTest(unittest.TestCase):
     def _fallar(error):
         raise error
 
+    def test_http_400_estructurado(self):
+        from google.genai.errors import ClientError
+
+        marcador = "dato sensible simulado"
+        info = {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID",
+                "metadata": {"detalle": marcador}}
+        casos = [
+            ({"status": "INVALID_ARGUMENT"}, "Argumento no válido (INVALID_ARGUMENT)."),
+            ({"status": "FAILED_PRECONDITION"}, "Condición previa no cumplida (FAILED_PRECONDITION)."),
+            ({"error": {"status": "INVALID_ARGUMENT", "details": [info]}}, "Clave API no válida (API_KEY_INVALID)."),
+            ({"details": [info]}, "Clave API no válida (API_KEY_INVALID)."),
+            ({"message": "API_KEY_INVALID " + marcador}, "Solicitud rechazada."),
+            ({"status": marcador, "details": [{"reason": "API_KEY_INVALID"}]}, "Solicitud rechazada."),
+            ({"status": ["INVALID_ARGUMENT"], "details": marcador}, "Solicitud rechazada."),
+            ({}, "Solicitud rechazada."),
+        ]
+        for i, (cuerpo, esperado) in enumerate(casos):
+            with self.subTest(caso=i):
+                error = ClientError(400, {"message": marcador, **cuerpo})
+                sdk = Mock()
+                sdk.Client.return_value.models.generate_content.side_effect = error
+                with patch.object(ui.conector, "_leer_clave", return_value="simulada"), patch.object(
+                    ui.conector, "_cargar_sdk", return_value=sdk
+                ):
+                    resultado = ui.conector.consultar_gemini(modelo=ui.MODELO, id_accion="demo",
+                        control={}, accion_explicita=True, permitir_red=True)
+                self.assertEqual(resultado["mensaje"], esperado)
+                self.assertEqual(resultado["etapa"], "Envío de solicitud")
+                self.assertEqual(resultado["http"], 400)
+                self.assertNotIn(marcador, str(resultado))
+
     def test_categorias_http(self):
         for http, categoria in ((400, "solicitud_invalida"), (401, "autenticacion"),
                                 (403, "permiso_denegado"), (404, "recurso_no_encontrado"),
