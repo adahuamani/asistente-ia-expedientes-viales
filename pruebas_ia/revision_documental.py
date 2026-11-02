@@ -113,6 +113,9 @@ def mostrar_revision_documental():
 
     resultado = sesion.get("ia_resultado")
     if resultado is None:
+        if consumida:
+            st.warning("El intento se registró, pero no hay un resultado disponible en esta sesión. "
+                       "La consulta no se repetirá.")
         return
     if not resultado["valida_tecnicamente"]:
         partes = [resultado["mensaje"]]

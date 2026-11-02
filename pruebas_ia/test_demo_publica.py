@@ -153,6 +153,24 @@ class InterfazTest(unittest.TestCase):
         self.assertFalse(self.at.exception)
         self.llamada.assert_not_called()
 
+    aviso_sin_resultado = ("El intento se registró, pero no hay un resultado disponible en esta sesión. "
+                           "La consulta no se repetirá.")
+
+    def test_sin_resultado_antes_del_intento(self):
+        self.autenticar()
+        self.assertNotIn(self.aviso_sin_resultado, [w.value for w in self.at.warning])
+        self.assertFalse(self.at.button(key="ia_analizar").disabled)
+        self.llamada.assert_not_called()
+
+    def test_sin_resultado_con_intento_consumido(self):
+        self.autenticar()
+        self.at.session_state["ia_consulta_consumida"] = True
+        self.at.run()
+        self.assertFalse(self.at.exception)
+        self.assertIn(self.aviso_sin_resultado, [w.value for w in self.at.warning])
+        self.assertTrue(self.at.button(key="ia_analizar").disabled)
+        self.llamada.assert_not_called()
+
     def test_incorrecta(self):
         self.autenticar(uuid4().hex)
         self.assertTrue(any("incorrecta" in x.value for x in self.at.warning))
