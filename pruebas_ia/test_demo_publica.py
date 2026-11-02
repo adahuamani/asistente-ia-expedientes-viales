@@ -51,6 +51,51 @@ class ContextoTest(unittest.TestCase):
         self.assertFalse(v.validar_respuesta(propuesta)["valida_tecnicamente"])
 
 
+class DiagnosticoTest(unittest.TestCase):
+    def test_excepciones_por_etapa(self):
+        for etapa in ("Creación del cliente", "Envío de solicitud", "Lectura de respuesta", "Verificación local"):
+            with self.subTest(etapa=etapa):
+                sdk = Mock()
+                error = ValueError("detalle privado simulado")
+                cliente = sdk.Client.return_value
+                generar = cliente.models.generate_content
+                respuesta = Mock(candidates=[SimpleNamespace(finish_reason="STOP")], text="{}")
+                generar.return_value = respuesta
+                if etapa == "Creación del cliente":
+                    sdk.Client.side_effect = error
+                elif etapa == "Envío de solicitud":
+                    error.response = SimpleNamespace(status_code=404)
+                    generar.side_effect = error
+                elif etapa == "Lectura de respuesta":
+                    type(respuesta).text = property(lambda _: self._fallar(error))
+                with patch.object(ui.conector, "_leer_clave", return_value="simulada"), patch.object(
+                    ui.conector, "_cargar_sdk", return_value=sdk
+                ), patch.object(v, "validar_respuesta", side_effect=error):
+                    resultado = ui.conector.consultar_gemini(modelo=ui.MODELO, id_accion="demo",
+                        control={}, accion_explicita=True, permitir_red=True)
+                self.assertEqual(resultado["etapa"], etapa)
+                self.assertEqual(resultado["http"], 404 if etapa == "Envío de solicitud" else None)
+                self.assertNotIn("detalle privado", str(resultado))
+                self.assertFalse(resultado["valida_tecnicamente"])
+
+    @staticmethod
+    def _fallar(error):
+        raise error
+
+    def test_categorias_http(self):
+        for http, categoria in ((400, "solicitud_invalida"), (401, "autenticacion"),
+                                (403, "permiso_denegado"), (404, "recurso_no_encontrado"),
+                                (429, "cuota"), (500, "error_servicio"), (504, "tiempo_agotado")):
+            with self.subTest(http=http):
+                error = RuntimeError()
+                error.code = str(http)
+                codigo = ui.conector._codigo_http(error)
+                self.assertEqual(codigo, http)
+                self.assertEqual(ui.conector._clasificar_error(error, codigo)[0], categoria)
+        error.code = "403 detalle privado"
+        self.assertIsNone(ui.conector._codigo_http(error))
+
+
 class InterfazTest(unittest.TestCase):
     def setUp(self):
         self.destino = Path(self.enterContext(TemporaryDirectory(dir=v.RAIZ / "pruebas_ia")))
@@ -101,8 +146,11 @@ class InterfazTest(unittest.TestCase):
         self.assertFalse(self.at.button(key="ia_analizar").disabled)
         self.llamada.assert_not_called()
         self.llamada.side_effect = TimeoutError(self.password)
+        self.llamada.side_effect.status_code = 504
         self.at.button(key="ia_analizar").click().run()
         self.assertTrue(self.at.error)
+        self.assertEqual(self.at.error[0].value,
+            "Envío de solicitud · Se agotó el tiempo de espera; no se reintentó. · HTTP 504")
         self.assertNotIn(self.password, self.at.error[0].value)
         self.assertTrue(self.at.button(key="ia_analizar").disabled)
         with self.assertRaises(AppTestError):

@@ -115,7 +115,12 @@ def mostrar_revision_documental():
     if resultado is None:
         return
     if not resultado["valida_tecnicamente"]:
-        st.error(resultado["mensaje"])
+        partes = [resultado["mensaje"]]
+        if resultado.get("etapa"):
+            partes.insert(0, resultado["etapa"])
+        if resultado.get("http") is not None:
+            partes.append(f"HTTP {resultado['http']}")
+        st.error(" · ".join(partes))
         return
 
     propuesta = resultado["propuesta"]

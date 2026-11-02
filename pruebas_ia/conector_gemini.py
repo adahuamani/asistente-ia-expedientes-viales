@@ -96,21 +96,36 @@ def _resultado(codigo, mensaje, **extras):
             "revision_humana": "Pendiente", "evidencia_validada": False, **extras}
 
 
-def _clasificar_error(error):
-    # No reflejar str(error), cabeceras, URLs, cuerpos ni secretos del SDK.
-    codigo = getattr(error, "code", None)
-    if codigo is None:
-        codigo = getattr(error, "status_code", None)
-    if str(codigo) in ("401", "403"):
-        return "autenticacion", "Autenticación o permisos rechazados."
-    if str(codigo) == "429":
-        return "cuota", "Cuota o límite de solicitudes alcanzado; no se reintentó."
+def _codigo_http(error):
+    # Solo códigos numéricos de atributos estructurados. Nunca leer el mensaje o el cuerpo.
+    for valor in (getattr(error, "code", None), getattr(error, "status_code", None),
+                  getattr(getattr(error, "response", None), "status_code", None)):
+        if type(valor) is str and len(valor) == 3 and valor.isascii() and valor.isdecimal():
+            valor = int(valor)
+        if isinstance(valor, int) and 100 <= valor <= 599:
+            return int(valor)
+    return None
+
+
+def _clasificar_error(error, codigo):
+    if codigo == 400:
+        return "solicitud_invalida", "Solicitud rechazada."
+    if codigo == 401:
+        return "autenticacion", "Autenticación rechazada."
+    if codigo == 403:
+        return "permiso_denegado", "Acceso denegado."
+    if codigo == 404:
+        return "recurso_no_encontrado", "Recurso no encontrado."
+    if codigo == 429:
+        return "cuota", "Límite de solicitudes alcanzado."
     clases = {c.__name__ for c in type(error).__mro__}
-    if isinstance(error, TimeoutError) or any("Timeout" in c for c in clases) or str(codigo) in ("408", "504"):
+    if isinstance(error, TimeoutError) or any("Timeout" in c for c in clases) or codigo in (408, 504):
         return "tiempo_agotado", "Se agotó el tiempo de espera; no se reintentó."
     if isinstance(error, ConnectionError) or clases & {"ConnectError", "NetworkError", "TransportError"}:
         return "conexion", "No se pudo completar la conexión."
-    return "error_servicio", "La consulta falló; revisar configuración o disponibilidad del servicio."
+    if codigo is not None and codigo >= 500:
+        return "error_servicio", "Error del servidor."
+    return "error_no_clasificado", "Fallo no clasificado."
 
 
 def consultar_gemini(*, modelo, id_accion, control, accion_explicita=False,
@@ -146,11 +161,13 @@ def consultar_gemini(*, modelo, id_accion, control, accion_explicita=False,
     except ImportError:
         return _resultado("sdk_no_disponible", "Falta google-genai; no se consultó Gemini.")
     cliente = None
+    etapa = "Creación del cliente"
     try:
         cliente = sdk.Client(
             api_key=clave, vertexai=False,
             http_options={"timeout": timeout_ms, "retry_options": {"attempts": 1}},
         )
+        etapa = "Envío de solicitud"
         respuesta = cliente.models.generate_content(
             model=modelo,
             contents=json.dumps(solicitud["datos"], ensure_ascii=False),
@@ -163,28 +180,31 @@ def consultar_gemini(*, modelo, id_accion, control, accion_explicita=False,
                 "tools": [],
             },
         )
+        etapa = "Lectura de respuesta"
         candidatos = getattr(respuesta, "candidates", None)
         if not candidatos or len(candidatos) != 1:
-            return _resultado("respuesta_invalida", "Respuesta vacía o bloqueada; no se acepta.")
+            return _resultado("respuesta_invalida", "Respuesta vacía o bloqueada; no se acepta.", etapa=etapa)
         motivo = getattr(candidatos[0], "finish_reason", None)
         motivo = getattr(motivo, "value", motivo)
         if motivo != "STOP":
-            return _resultado("respuesta_invalida", "Respuesta incompleta o bloqueada; no se acepta.")
+            return _resultado("respuesta_invalida", "Respuesta incompleta o bloqueada; no se acepta.", etapa=etapa)
         texto = respuesta.text
         if type(texto) is not str or not texto.strip() or len(texto) > 100000:
-            return _resultado("respuesta_invalida", "Respuesta ausente o fuera de límites.")
+            return _resultado("respuesta_invalida", "Respuesta ausente o fuera de límites.", etapa=etapa)
         # Pasar el texto crudo preserva la detección de claves JSON duplicadas.
+        etapa = "Verificación local"
         validacion = verificador.validar_respuesta(texto, raiz)
         if not validacion["valida_tecnicamente"]:
-            return _resultado("respuesta_rechazada", "Respuesta rechazada por verificación local.")
+            return _resultado("respuesta_rechazada", "Respuesta rechazada por verificación local.", etapa=etapa)
         return _resultado(
             "propuesta_pendiente", "Propuesta de IA pendiente de validación humana",
             valida_tecnicamente=True, propuesta=json.loads(texto),
             referencias_verificadas=validacion["referencias_verificadas"],
         )
     except Exception as error:
-        codigo, mensaje = _clasificar_error(error)
-        return _resultado(codigo, mensaje)
+        http = _codigo_http(error)
+        codigo, mensaje = _clasificar_error(error, http)
+        return _resultado(codigo, mensaje, etapa=etapa, http=http)
     finally:
         if cliente is not None:
             try:
