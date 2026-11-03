@@ -61,8 +61,6 @@ def _autenticar():
 
 
 def mostrar_revision_documental():
-    st.divider()
-    st.subheader("9. Revisión documental asistida por IA")
     st.write(f"{verificador.REQUISITO_ID} · {verificador.REQUISITO_TEXTO}")
     try:
         fragmentos = verificador.verificar_contexto()

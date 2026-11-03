@@ -1,8 +1,10 @@
 """Pruebas de la demostración pública. Ejecutar desde la raíz con unittest."""
 import copy
 import csv
+from xml.etree import ElementTree
 from io import BytesIO, StringIO
 import json
+import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -29,6 +31,173 @@ def respuesta_simulada():
     }
 
 
+MODULOS = (
+    "1. Carga de documentos", "2. Matriz base de requisitos",
+    "3. Registro de evidencias documentales", "4. Matriz integrada de trazabilidad",
+    "5. Registrar nueva evidencia", "6. Vincular evidencia existente con requisito",
+    "7. Reporte preliminar de trazabilidad documental", "8. Revisión documental asistida por IA",
+)
+
+
+def navegar(at, numero):
+    at.sidebar.radio(key="nav_modulo").set_value(MODULOS[numero - 1]).run()
+    if at.exception:
+        raise AssertionError(at.exception[0].message)
+
+
+class NavegacionTest(unittest.TestCase):
+    def setUp(self):
+        self.raiz = Path(self.enterContext(TemporaryDirectory()))
+        for nombre in ("app.py", "requisitos.csv", "evidencias.csv"):
+            shutil.copyfile(v.RAIZ / nombre, self.raiz / nombre)
+        (self.raiz / "documentos_fuente").mkdir()
+        self.consultar = self.enterContext(patch.object(ui.conector, "consultar_gemini"))
+
+    def app(self, numero):
+        at = AppTest.from_file(str(self.raiz / "app.py"), default_timeout=25)
+        at.secrets["modo_prueba"] = True
+        at.session_state["nav_modulo"] = MODULOS[numero - 1]
+        return at.run()
+
+    def test_acceso_directo_y_word_solo_en_reporte(self):
+        originales = {p: p.read_bytes() for p in self.raiz.glob("*.csv")}
+        from docx.document import Document as DocumentoWord
+        with patch.object(DocumentoWord, "save", autospec=True, side_effect=DocumentoWord.save) as guardar:
+            for numero, titulo in enumerate(MODULOS, 1):
+                with self.subTest(numero=numero):
+                    guardar.reset_mock()
+                    at = self.app(numero)
+                    self.assertFalse(at.exception)
+                    self.assertFalse(at.error)
+                    self.assertEqual(at.sidebar.radio(key="nav_modulo").options, list(MODULOS))
+                    self.assertEqual([h.value for h in at.header], [titulo])
+                    self.assertEqual(guardar.call_count, int(numero == 7))
+                    navegar(at, 1)
+                    self.assertEqual(guardar.call_count, int(numero == 7))
+        self.assertEqual({p: p.read_bytes() for p in originales}, originales)
+        self.consultar.assert_not_called()
+
+    def test_tablas_conservan_campos_identificadores_orden_y_texto(self):
+        def leer(nombre):
+            with (self.raiz / nombre).open(encoding="utf-8-sig", newline="") as f:
+                return list(csv.DictReader(f))
+        req = leer("requisitos.csv")
+        ev = leer("evidencias.csv")
+        # Solo en la copia temporal: orden no alfabético, texto largo y marcado literal.
+        largo = "<b>fuente & evidencia</b> " * 100 + "\nÚltima línea"
+        for archivo, filas, cambios in (
+            ("requisitos.csv", req, {"requisito_id": "QA-02", "observacion": largo}),
+            ("evidencias.csv", ev, {"evidencia_id": "QA-02", "requisito_id": "QA-02",
+                                    "evidencia_textual": largo}),
+        ):
+            filas.append(dict(filas[0], **cambios))
+            with (self.raiz / archivo).open("w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=filas[0])
+                writer.writeheader()
+                writer.writerows(filas)
+        ev.append(dict(ev[1], evidencia_id="QA-01", requisito_id="Sin asignar"))
+        with (self.raiz / "evidencias.csv").open("a", encoding="utf-8", newline="") as f:
+            csv.DictWriter(f, fieldnames=ev[0]).writerow(ev[-1])
+        originales = {p: p.read_bytes() for p in self.raiz.glob("*.csv")}
+        def comprobar(par, ids, esperado):
+            (titulo_a, parte_a), (titulo_b, parte_b) = par
+            self.assertTrue(titulo_a.startswith("Parte A"))
+            self.assertTrue(titulo_b.startswith("Parte B"))
+            for a, b in zip(parte_a, parte_b, strict=True):
+                self.assertEqual(a.keys() & b.keys(), set(ids))
+                self.assertEqual([a[k] for k in ids], [b[k] for k in ids])
+            self.assertEqual([a | b for a,b in zip(parte_a, parte_b)], esperado)
+        at = self.app(2)
+        def etiquetas_visibles():
+            bloques = [ElementTree.fromstring(w.proto.body) for w in at.get("html")
+                       if w.proto.body.startswith('<div class="h3-tabla">')]
+            etiquetas = []
+            for bloque in bloques:
+                nombres = [th.text for th in bloque.findall(".//th")]
+                self.assertFalse(any("_" in n for n in nombres))
+                for fila in bloque.findall(".//tbody/tr"):
+                    self.assertEqual([td.attrib["data-etiqueta"] for td in fila], nombres)
+                etiquetas.append(nombres)
+            return etiquetas
+        self.assertEqual(etiquetas_visibles(), [
+            ["ID requisito", "Componente", "Requisito"],
+            ["ID requisito", "Fuente normativa", "Estado preliminar", "Fuente documental",
+             "Ubicación evidencia", "Observación"]])
+        comprobar(leer_partes(at), ["requisito_id"], req)
+        navegar(at, 3)
+        self.assertEqual(etiquetas_visibles(), [
+            ["ID evidencia", "ID requisito", "Tipo de documento", "Evidencia textual"],
+            ["ID evidencia", "Archivo fuente", "Ubicación", "Origen del registro",
+             "Validación del especialista"]])
+        comprobar(leer_partes(at), ["evidencia_id"], ev)
+        navegar(at, 4)
+        tablas = leer_partes(at)
+        vinculadas = [{"Requisito ID": r["requisito_id"], "Evidencia ID": e["evidencia_id"],
+                       "Componente": r["componente"], "Requisito": r["requisito"],
+                       "Texto evidencia": e["evidencia_textual"], "Archivo fuente": e["archivo_fuente"],
+                       "Ubicacion": e["ubicacion"], "Estado documental": "Vinculada",
+                       "Validacion": e["validacion_especialista"]} for r,e in zip(req, ev)]
+        comprobar(tablas[:2], ["Requisito ID","Evidencia ID"], vinculadas)
+        comprobar(tablas[2:], ["evidencia_id"], [dict(ev[-1], **{"Estado documental":"Sin asignar"})])
+        with patch.object(ui.st, "download_button", wraps=ui.st.download_button) as descargas:
+            navegar(at, 7)
+        tablas = leer_partes(at)
+        doc = Document(BytesIO(descargas.call_args.kwargs["data"]))
+        self.assertEqual(len(doc.tables), 2)
+        for grupo, tabla, ids, campos, valores in (
+            (tablas[:2], doc.tables[0], ["ID"],
+             ["ID","Componente","Requisito","Fuente normativa","Estado preliminar registrado"],
+             [[r[k] for k in ("requisito_id","componente","requisito","fuente_normativa","estado_preliminar")] for r in req]),
+            (tablas[2:], doc.tables[1], ["ID de evidencia"],
+             ["ID de evidencia","Requisito asociado","Documento fuente","Ubicacion","Situacion documental","Validacion del especialista"],
+             [[e["evidencia_id"],e["requisito_id"],e["archivo_fuente"],e["ubicacion"],
+               "Sin asignar" if e is ev[-1] else "Vinculada",e["validacion_especialista"]] for e in ev]),
+        ):
+            self.assertEqual([[c.text for c in r.cells] for r in tabla.rows], [campos, *valores])
+            comprobar(grupo, ids, [dict(zip(campos, fila)) for fila in valores])
+        self.assertEqual({p:p.read_bytes() for p in originales}, originales)
+        self.consultar.assert_not_called()
+
+    def test_carga_se_conserva_al_volver(self):
+        at = self.app(1)
+        archivo = v.RAIZ / "documentos_fuente" / v.PDF_PUBLICO
+        at.file_uploader(key="archivo_carga").upload(archivo.name, archivo.read_bytes(), "application/pdf").run()
+        texto = at.text_area[0].value
+        self.assertIn("1.0 MEMORIA DESCRIPTIVA", texto)
+        navegar(at, 2)
+        navegar(at, 1)
+        self.assertEqual(at.text_area[0].value, texto)
+        self.assertIn("Contenido extraído", [x.value for x in at.subheader])
+        self.assertEqual(len(list((self.raiz / "documentos_fuente").iterdir())), 1)
+        self.consultar.assert_not_called()
+
+    def test_confirmacion_solo_para_la_pareja_actual(self):
+        at = self.app(5)
+        for texto in ("Evidencia A", "Evidencia B"):
+            at.text_input[0].input("prueba.pdf")
+            at.text_input[1].input("Página 2")
+            at.text_area[0].input(texto)
+            next(b for b in at.button if b.label == "Guardar evidencia").click().run()
+            self.assertFalse(at.error)
+        ruta = self.raiz / "evidencias.csv"
+        antes = ruta.read_bytes()
+        navegar(at, 6)
+        pendientes = at.selectbox[0].options
+        self.assertEqual(len(pendientes), 2)
+        at.checkbox(key="revisar_pertinencia").check().run()
+        at.checkbox(key="confirmar_vinculacion").check().run()
+        self.assertFalse(at.button(key="boton_guardar_vinculacion").disabled)
+        at.selectbox[0].select(pendientes[1]).run()
+        self.assertTrue(at.button(key="boton_guardar_vinculacion").disabled)
+        at.checkbox(key="revisar_pertinencia").check().run()
+        at.checkbox(key="confirmar_vinculacion").check().run()
+        navegar(at, 4)
+        navegar(at, 6)
+        self.assertTrue(at.button(key="boton_guardar_vinculacion").disabled)
+        self.assertEqual(ruta.read_bytes(), antes)
+        self.consultar.assert_not_called()
+
+
 class ContextoTest(unittest.TestCase):
     def test_integridad_y_alcance(self):
         datos = v._leer_contexto(v.RAIZ)
@@ -52,6 +221,20 @@ class ContextoTest(unittest.TestCase):
         fid = f"FR-{v.SHA256_ESPERADO}-P0003"
         propuesta.update(fragmentos_citados=[fid], citas_textuales=[{"fragmento_id":fid, "texto":"Continuación"}])
         self.assertFalse(v.validar_respuesta(propuesta)["valida_tecnicamente"])
+
+
+def leer_partes(at):
+    tablas = []
+    for widget in at.get("html"):
+        html = widget.proto.body
+        if not html.startswith('<div class="h3-tabla">'):
+            continue
+        tabla = ElementTree.fromstring(html).find("table")
+        campos = [c.attrib["data-campo"] for c in tabla.findall("thead/tr/th")]
+        registros = [dict(zip(campos, ["".join(c.itertext()) for c in fila.findall("td")], strict=True))
+                     for fila in tabla.findall("tbody/tr")]
+        tablas.append((tabla.findtext("caption"), registros))
+    return tablas
 
 
 class VinculacionTest(unittest.TestCase):
@@ -86,17 +269,20 @@ class VinculacionTest(unittest.TestCase):
             ui.st, "download_button", wraps=ui.st.download_button
         ) as descargas:
             at.run()
+            navegar(at, 4)
+            tablas_matriz = leer_partes(at)
+            navegar(at, 7)
         self.assertFalse(at.exception)
         self.assertFalse(at.error)
         matriz = {}
         previa = {}
-        for widget in at.dataframe:
-            tabla = widget.value
+        for _, registros in tablas_matriz + leer_partes(at):
+            tabla = registros[0]
             if "Estado documental" in tabla:
                 campo = "Evidencia ID" if "Evidencia ID" in tabla else "evidencia_id"
-                matriz.update(zip(tabla[campo], tabla["Estado documental"]))
+                matriz.update((r[campo], r["Estado documental"]) for r in registros)
             if "Situacion documental" in tabla:
-                previa.update(zip(tabla["ID de evidencia"], tabla["Situacion documental"]))
+                previa.update((r["ID de evidencia"], r["Situacion documental"]) for r in registros)
         datos, = [c.kwargs["data"] for c in descargas.call_args_list
                   if c.kwargs.get("file_name") == "reporte_preliminar_trazabilidad.docx"]
         word = Document(BytesIO(datos)).tables[-1]
@@ -207,7 +393,8 @@ class InterfazTest(unittest.TestCase):
         self.at.run()
         self.assertFalse(self.at.exception)
         self.assertFalse(self.at.error)
-        self.assertTrue(any("9. Revisión documental" in w.value for w in self.at.subheader))
+        navegar(self.at, 8)
+        self.assertEqual(self.at.header[0].value, MODULOS[7])
         self.llamada.assert_not_called()
 
     def autenticar(self, entrada=None):
@@ -336,11 +523,16 @@ class InterfazTest(unittest.TestCase):
         self.llamada.assert_not_called()
 
     def test_descargas_y_recarga(self):
+        navegar(self.at, 3)
         self.at.selectbox(key="consulta_fuente_evidencia").select(v.EVIDENCIA_ID)
         self.at.button(key="boton_ver_fuente").click().run()
         etiquetas = [x.label for x in self.at.get("download_button")]
         self.assertIn("Abrir o descargar documento fuente", etiquetas)
+        navegar(self.at, 8)
+        etiquetas = [x.label for x in self.at.get("download_button")]
         self.assertIn("Descargar PDF sintético de demostración", etiquetas)
+        navegar(self.at, 7)
+        etiquetas = [x.label for x in self.at.get("download_button")]
         self.assertIn("Descargar reporte preliminar en Word", etiquetas)
         self.at.run()
         self.assertFalse(self.at.error)
@@ -350,6 +542,9 @@ class InterfazTest(unittest.TestCase):
         self.autenticar()
         self.at.button(key="ia_analizar").click().run()
         self.assertTrue(any(x.value == "Pendiente de validación humana" for x in self.at.info))
+        self.assertIn("1.0 MEMORIA DESCRIPTIVA", [x.value for x in self.at.text])
+        navegar(self.at, 2)
+        navegar(self.at, 8)
         self.assertIn("1.0 MEMORIA DESCRIPTIVA", [x.value for x in self.at.text])
         enviado = json.loads(self.llamada.call_args.kwargs["contents"])
         self.assertEqual([f["pagina_pdf"] for f in enviado["fragmentos"]], [1, 2])
@@ -367,6 +562,10 @@ class InterfazTest(unittest.TestCase):
         self.at.button(key=f"ia_guardar_{aid}").click().run()
         self.at.run()
         self.assertFalse(self.at.exception)
+        navegar(self.at, 1)
+        navegar(self.at, 8)
+        self.assertTrue(any(opcion in x.value for x in self.at.success))
+        self.assertTrue(self.at.button(key="ia_analizar").disabled)
         archivos = list(self.destino.glob("*.json"))
         self.assertEqual(len(archivos), 1)
         registro = json.loads(archivos[0].read_text(encoding="utf-8"))
@@ -392,5 +591,5 @@ class InterfazTest(unittest.TestCase):
         self.llamada.return_value.text = json.dumps(propuesta)
         self.at.button(key="ia_analizar").click().run()
         self.assertTrue(any("verificación local" in e.value for e in self.at.error))
-        self.assertFalse(self.at.radio)
+        self.assertFalse(self.at.main.radio)
         self.assertFalse(list(self.destino.iterdir()))
