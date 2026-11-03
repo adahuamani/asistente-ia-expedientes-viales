@@ -99,15 +99,23 @@ def mostrar_revision_documental():
         sesion["ia_consulta_consumida"] = True
         accion = uuid4().hex
         sesion["ia_analisis_id"] = accion
+        conector.registrar_hito(accion, "intento_registrado")
         sesion.pop("ia_decision_guardada", None)
         try:
-            sesion["ia_resultado"] = conector.consultar_gemini(
+            resultado = conector.consultar_gemini(
                 modelo=MODELO, id_accion=accion, control=control, accion_explicita=True,
                 permitir_red=True,
             )
         except Exception:
-            sesion["ia_resultado"] = {"valida_tecnicamente": False,
-                                     "mensaje": "No se pudo completar el análisis."}
+            conector.registrar_fallo(accion, "Consulta", "error_no_clasificado")
+            resultado = {"valida_tecnicamente": False, "mensaje": "No se pudo completar el análisis."}
+
+        try:
+            sesion["ia_resultado"] = resultado
+        except Exception:
+            conector.registrar_fallo(accion, "Guardado en sesión", "error_de_guardado")
+            sesion["ia_resultado"] = {"valida_tecnicamente": False, "mensaje": "No se pudo completar el análisis."}
+        conector.registrar_hito(accion, "resultado_guardado")
 
         st.rerun()
 

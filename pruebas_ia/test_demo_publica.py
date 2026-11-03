@@ -68,11 +68,18 @@ class DiagnosticoTest(unittest.TestCase):
                     generar.side_effect = error
                 elif etapa == "Lectura de respuesta":
                     type(respuesta).text = property(lambda _: self._fallar(error))
-                with patch.object(ui.conector, "_leer_clave", return_value="simulada"), patch.object(
+                with self.assertLogs(ui.conector._LOG, level="INFO") as captura, patch.object(ui.conector, "_leer_clave", return_value="simulada"), patch.object(
                     ui.conector, "_cargar_sdk", return_value=sdk
                 ), patch.object(v, "validar_respuesta", side_effect=error):
                     resultado = ui.conector.consultar_gemini(modelo=ui.MODELO, id_accion="demo",
                         control={}, accion_explicita=True, permitir_red=True)
+                mensajes = [r.getMessage() for r in captura.records]
+                self.assertIn(f"evento=fallo etapa={etapa} categoria=", mensajes[-1])
+                self.assertNotIn("detalle privado", str(mensajes))
+                self.assertNotIn("verificacion_finalizada", str(mensajes))
+                self.assertEqual(any("sdk_devolvio_respuesta" in m for m in mensajes),
+                                 etapa in ("Lectura de respuesta", "Verificación local"))
+                self.assertEqual(" http=" in mensajes[-1], etapa == "Envío de solicitud")
                 self.assertEqual(resultado["etapa"], etapa)
                 self.assertEqual(resultado["http"], 404 if etapa == "Envío de solicitud" else None)
                 self.assertNotIn("detalle privado", str(resultado))
@@ -155,6 +162,63 @@ class InterfazTest(unittest.TestCase):
 
     aviso_sin_resultado = ("El intento se registró, pero no hay un resultado disponible en esta sesión. "
                            "La consulta no se repetirá.")
+
+    def test_traza_exito_y_guardado_antes_del_evento(self):
+        self.autenticar()
+        guardado = []
+        log = ui.conector._LOG
+        emitir = log.handle
+
+        def observar(registro):
+            if registro.getMessage().endswith("evento=resultado_guardado"):
+                guardado.append(ui.st.session_state["ia_resultado"]["valida_tecnicamente"])
+            emitir(registro)
+
+        with self.assertLogs(log, level="INFO") as captura, patch.object(
+            log, "handle", side_effect=observar
+        ), patch.object(ui.conector, "consultar_gemini", wraps=ui.conector.consultar_gemini) as consulta:
+            self.at.button(key="ia_analizar").click().run()
+            self.at.run()
+        consulta.assert_called_once()
+        self.llamada.assert_called_once()
+        self.assertEqual(guardado, [True])
+        accion = self.at.session_state["ia_analisis_id"]
+        self.assertEqual([r.getMessage() for r in captura.records], [
+            f"intento={accion} evento={evento}" for evento in (
+                "intento_registrado", "antes_de_generate_content", "sdk_devolvio_respuesta",
+                "verificacion_finalizada", "resultado_guardado")])
+
+    def test_parada_antes_de_terminar_verificacion(self):
+        self.autenticar()
+        with self.assertLogs(ui.conector._LOG, level="INFO") as captura, patch.object(
+            v, "validar_respuesta", side_effect=lambda *_: ui.st.stop()
+        ):
+            self.at.button(key="ia_analizar").click().run()
+            self.at.run()
+        accion = self.at.session_state["ia_analisis_id"]
+        self.assertEqual([r.getMessage() for r in captura.records], [
+            f"intento={accion} evento={evento}" for evento in (
+                "intento_registrado", "antes_de_generate_content", "sdk_devolvio_respuesta")])
+        self.assertIn(self.aviso_sin_resultado, [w.value for w in self.at.warning])
+        self.assertTrue(self.at.button(key="ia_analizar").disabled)
+        self.llamada.assert_called_once()
+
+    def test_traza_error_http_sin_datos_privados(self):
+        self.autenticar()
+        error = RuntimeError(self.password + " " + self.at.secrets["GEMINI_API_KEY"])
+        error.status_code = 403
+        self.llamada.side_effect = error
+        with self.assertLogs(ui.conector._LOG, level="INFO") as captura:
+            self.at.button(key="ia_analizar").click().run()
+            self.at.run()
+        accion = self.at.session_state["ia_analisis_id"]
+        self.assertEqual([r.getMessage() for r in captura.records], [
+            f"intento={accion} evento={valor}" for valor in (
+                "intento_registrado", "antes_de_generate_content",
+                "fallo etapa=Envío de solicitud categoria=permiso_denegado http=403",
+                "resultado_guardado")])
+        self.assertTrue(all(r.exc_info is None for r in captura.records))
+        self.llamada.assert_called_once()
 
     def test_sin_resultado_antes_del_intento(self):
         self.autenticar()

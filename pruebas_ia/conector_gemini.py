@@ -4,6 +4,8 @@ La futura UI debe conservar `control` en session_state y generar un id_accion
 nuevo SOLO al pulsar el botón. Una acción consumida nunca se reintenta sola.
 """
 import json
+import logging
+import re
 import threading
 from collections.abc import MutableMapping
 
@@ -41,6 +43,32 @@ Explica que solo se revisaron dos páginas y que hace falta validación humana.
 No declares ninguna evidencia validada.
 """
 _LOCK = threading.Lock()
+
+
+# Salida del servidor, aislada de los loggers del SDK y de sus datos de transporte.
+_LOG = logging.getLogger("hito3.gemini")
+_LOG.setLevel(logging.INFO)
+_LOG.propagate = False
+if not _LOG.handlers:
+    _LOG.addHandler(logging.StreamHandler())
+
+
+def registrar_hito(accion, evento):
+    _LOG.info("intento=%s evento=%s", _id_log(accion), evento)
+
+
+def _id_log(accion):
+    # La UI genera uuid4().hex; otros llamadores no pueden inyectar texto en el ID.
+    return accion if isinstance(accion, str) and re.fullmatch(r"[0-9a-f]{32}", accion) else "no_disponible"
+
+
+def registrar_fallo(accion, etapa, categoria, http=None):
+    mensaje = "intento=%s evento=fallo etapa=%s categoria=%s"
+    args = (_id_log(accion), etapa, categoria)
+    if type(http) is int and 100 <= http <= 599:
+        _LOG.warning(mensaje + " http=%d", *args, http)
+    else:
+        _LOG.warning(mensaje, *args)
 
 
 def preparar_solicitud(raiz=verificador.RAIZ):
@@ -156,29 +184,38 @@ def consultar_gemini(*, modelo, id_accion, control, accion_explicita=False,
     `control`: mapping por sesión, conservado entre recargas. No es una caché
     global ni garantía de idempotencia entre procesos/reinicios.
     """
+    etapa = "Control del intento"
+
+    def fallo(codigo, mensaje, **extras):
+        registrar_fallo(id_accion, etapa, codigo, extras.get("http"))
+        return _resultado(codigo, mensaje, **extras)
+
     if accion_explicita is not True or permitir_red is not True:
-        return _resultado("consulta_no_autorizada", "No se realizó ninguna consulta.")
+        return fallo("consulta_no_autorizada", "No se realizó ninguna consulta.")
     if (type(modelo) is not str or not modelo.strip() or
             type(id_accion) is not str or not id_accion.strip() or len(id_accion) > 128 or
             not isinstance(control, MutableMapping) or
             type(timeout_ms) is not int or not 1000 <= timeout_ms <= 60000):
-        return _resultado("configuracion_invalida", "Modelo, acción, control o tiempo de espera inválidos.")
+        return fallo("configuracion_invalida", "Modelo, acción, control o tiempo de espera inválidos.")
     with _LOCK:
         if id_accion in control:
-            return _resultado("accion_ya_procesada", "Esta acción ya fue consumida; no se repite la consulta.")
+            return fallo("accion_ya_procesada", "Esta acción ya fue consumida; no se repite la consulta.")
         control[id_accion] = "consumida"
+    etapa = "Preparación de solicitud"
     try:
         solicitud = preparar_solicitud(raiz)
     except Exception:
-        return _resultado("contexto_invalido", "Falló la verificación local de las fuentes; no se consultó Gemini.")
+        return fallo("contexto_invalido", "Falló la verificación local de las fuentes; no se consultó Gemini.")
+    etapa = "Lectura de configuración"
     try:
         clave = _leer_clave()
     except Exception:
-        return _resultado("secreto_no_disponible", "El secreto del servidor no está disponible; no se consultó Gemini.")
+        return fallo("secreto_no_disponible", "El secreto del servidor no está disponible; no se consultó Gemini.")
+    etapa = "Carga del SDK"
     try:
         sdk = _cargar_sdk()
     except ImportError:
-        return _resultado("sdk_no_disponible", "Falta google-genai; no se consultó Gemini.")
+        return fallo("sdk_no_disponible", "Falta google-genai; no se consultó Gemini.")
     cliente = None
     etapa = "Creación del cliente"
     try:
@@ -187,6 +224,7 @@ def consultar_gemini(*, modelo, id_accion, control, accion_explicita=False,
             http_options={"timeout": timeout_ms, "retry_options": {"attempts": 1}},
         )
         etapa = "Envío de solicitud"
+        registrar_hito(id_accion, "antes_de_generate_content")
         respuesta = cliente.models.generate_content(
             model=modelo,
             contents=json.dumps(solicitud["datos"], ensure_ascii=False),
@@ -199,22 +237,24 @@ def consultar_gemini(*, modelo, id_accion, control, accion_explicita=False,
                 "tools": [],
             },
         )
+        registrar_hito(id_accion, "sdk_devolvio_respuesta")
         etapa = "Lectura de respuesta"
         candidatos = getattr(respuesta, "candidates", None)
         if not candidatos or len(candidatos) != 1:
-            return _resultado("respuesta_invalida", "Respuesta vacía o bloqueada; no se acepta.", etapa=etapa)
+            return fallo("respuesta_invalida", "Respuesta vacía o bloqueada; no se acepta.", etapa=etapa)
         motivo = getattr(candidatos[0], "finish_reason", None)
         motivo = getattr(motivo, "value", motivo)
         if motivo != "STOP":
-            return _resultado("respuesta_invalida", "Respuesta incompleta o bloqueada; no se acepta.", etapa=etapa)
+            return fallo("respuesta_invalida", "Respuesta incompleta o bloqueada; no se acepta.", etapa=etapa)
         texto = respuesta.text
         if type(texto) is not str or not texto.strip() or len(texto) > 100000:
-            return _resultado("respuesta_invalida", "Respuesta ausente o fuera de límites.", etapa=etapa)
+            return fallo("respuesta_invalida", "Respuesta ausente o fuera de límites.", etapa=etapa)
         # Pasar el texto crudo preserva la detección de claves JSON duplicadas.
         etapa = "Verificación local"
         validacion = verificador.validar_respuesta(texto, raiz)
+        registrar_hito(id_accion, "verificacion_finalizada")
         if not validacion["valida_tecnicamente"]:
-            return _resultado("respuesta_rechazada", "Respuesta rechazada por verificación local.", etapa=etapa)
+            return fallo("respuesta_rechazada", "Respuesta rechazada por verificación local.", etapa=etapa)
         return _resultado(
             "propuesta_pendiente", "Propuesta de IA pendiente de validación humana",
             valida_tecnicamente=True, propuesta=json.loads(texto),
@@ -223,7 +263,7 @@ def consultar_gemini(*, modelo, id_accion, control, accion_explicita=False,
     except Exception as error:
         http = _codigo_http(error)
         codigo, mensaje = _clasificar_error(error, http)
-        return _resultado(codigo, mensaje, etapa=etapa, http=http)
+        return fallo(codigo, mensaje, etapa=etapa, http=http)
     finally:
         if cliente is not None:
             try:
