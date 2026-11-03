@@ -1,5 +1,7 @@
 """Pruebas de la demostración pública. Ejecutar desde la raíz con unittest."""
 import copy
+import csv
+from io import BytesIO, StringIO
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,6 +10,7 @@ from uuid import uuid4
 import unittest
 from unittest.mock import Mock, patch
 
+from docx import Document
 from streamlit.testing.v1.errors import AppTestError
 from streamlit.testing.v1 import AppTest
 from pruebas_ia import revision_documental as ui
@@ -49,6 +52,59 @@ class ContextoTest(unittest.TestCase):
         fid = f"FR-{v.SHA256_ESPERADO}-P0003"
         propuesta.update(fragmentos_citados=[fid], citas_textuales=[{"fragmento_id":fid, "texto":"Continuación"}])
         self.assertFalse(v.validar_respuesta(propuesta)["valida_tecnicamente"])
+
+
+class VinculacionTest(unittest.TestCase):
+    def test_coherencia_matriz_vista_previa_y_word(self):
+        rutas = [v.RAIZ / nombre for nombre in ("requisitos.csv", "evidencias.csv")]
+        originales = {ruta: ruta.read_bytes() for ruta in rutas}
+        evidencia = next(csv.DictReader(StringIO(originales[rutas[1]].decode("utf-8-sig"))))
+        self.assertEqual((evidencia["evidencia_id"], evidencia["requisito_id"]),
+                         ("EV-PUBLICO-01", "RQ-DEMO-01"))
+        filas = StringIO()
+        escritor = csv.DictWriter(filas, fieldnames=evidencia)
+        escritor.writeheader()
+        escritor.writerow(evidencia)
+        esperados = {"EV-PUBLICO-01": "Vinculada"}
+        for eid, rid, estado in (("EV-VACIA", "", "Sin asignar"),
+                                 ("EV-PENDIENTE", "Sin asignar", "Sin asignar"),
+                                 ("EV-HUERFANA", "RQ-INEXISTENTE", "Revisar identificador")):
+            escritor.writerow(dict(evidencia, evidencia_id=eid, requisito_id=rid))
+            esperados[eid] = estado
+
+        abrir = Path.open
+        def abrir_simulado(ruta, mode="r", *args, **kwargs):
+            if ruta in originales:
+                self.assertEqual(mode, "r")
+                if ruta == rutas[1]:
+                    return StringIO(filas.getvalue())
+            return abrir(ruta, mode, *args, **kwargs)
+
+        at = AppTest.from_file(str(v.RAIZ / "app.py"), default_timeout=25)
+        at.secrets["modo_prueba"] = True
+        with patch.object(Path, "open", abrir_simulado), patch.object(
+            ui.st, "download_button", wraps=ui.st.download_button
+        ) as descargas:
+            at.run()
+        self.assertFalse(at.exception)
+        self.assertFalse(at.error)
+        matriz = {}
+        previa = {}
+        for widget in at.dataframe:
+            tabla = widget.value
+            if "Estado documental" in tabla:
+                campo = "Evidencia ID" if "Evidencia ID" in tabla else "evidencia_id"
+                matriz.update(zip(tabla[campo], tabla["Estado documental"]))
+            if "Situacion documental" in tabla:
+                previa.update(zip(tabla["ID de evidencia"], tabla["Situacion documental"]))
+        datos, = [c.kwargs["data"] for c in descargas.call_args_list
+                  if c.kwargs.get("file_name") == "reporte_preliminar_trazabilidad.docx"]
+        word = Document(BytesIO(datos)).tables[-1]
+        estados_word = {fila.cells[0].text: fila.cells[4].text for fila in word.rows[1:]}
+        for origen, estados in (("matriz", matriz), ("vista previa", previa), ("Word", estados_word)):
+            with self.subTest(origen=origen):
+                self.assertEqual(estados, esperados)
+        self.assertEqual({ruta: ruta.read_bytes() for ruta in rutas}, originales)
 
 
 class DiagnosticoTest(unittest.TestCase):

@@ -12,6 +12,17 @@ import subprocess
 import tempfile
 
 
+def ids_de_requisitos(filas):
+    return {(fila.get("requisito_id") or "").strip() for fila in filas}
+
+
+def estado_vinculacion(requisito_id, ids_existentes):
+    identificador = (requisito_id or "").strip()
+    if identificador in ("", "Sin asignar"):
+        return "Sin asignar"
+    return "Vinculada" if identificador in ids_existentes else "Revisar identificador"
+
+
 def localizar_libreoffice():
     """Buscar el ejecutable sin iniciar Office ni cambiar su configuración."""
     candidatos = []
@@ -585,6 +596,12 @@ try:
         ) as archivo_csv:
             evidencias_matriz = list(csv.DictReader(archivo_csv))
 
+        ids_requisitos_matriz = ids_de_requisitos(requisitos_matriz)
+        for evidencia in evidencias_matriz:
+            evidencia["Estado documental"] = estado_vinculacion(
+                evidencia.get("requisito_id"), ids_requisitos_matriz
+            )
+
         matriz_trazabilidad = []
 
         for requisito in requisitos_matriz:
@@ -592,7 +609,8 @@ try:
             evidencias_asociadas = [
                 evidencia
                 for evidencia in evidencias_matriz
-                if evidencia.get("requisito_id", "").strip() == id_requisito
+                if evidencia["Estado documental"] == "Vinculada"
+                and evidencia["requisito_id"].strip() == id_requisito
             ]
 
             if evidencias_asociadas:
@@ -605,7 +623,7 @@ try:
                         "Archivo fuente": evidencia.get("archivo_fuente", ""),
                         "Ubicacion": evidencia.get("ubicacion", ""),
                         "Texto evidencia": evidencia.get("evidencia_textual", ""),
-                        "Estado documental": "Registro vinculado",
+                        "Estado documental": evidencia["Estado documental"],
                         "Validacion": evidencia.get("validacion_especialista", "")
                     })
             else:
@@ -628,16 +646,10 @@ try:
             hide_index=True
         )
 
-        ids_requisitos_matriz = {
-            requisito.get("requisito_id", "").strip()
-            for requisito in requisitos_matriz
-        }
-
         evidencias_sin_vinculo = [
             evidencia
             for evidencia in evidencias_matriz
-            if evidencia.get("requisito_id", "").strip()
-            not in ids_requisitos_matriz
+            if evidencia["Estado documental"] != "Vinculada"
         ]
 
         st.write("**Evidencias pendientes de vinculacion**")
@@ -1230,12 +1242,14 @@ st.info(
 # ETAPA 5.1: REQUISITOS DEL REPORTE PRELIMINAR
 st.markdown("**Requisitos registrados**")
 
+ids_requisitos_reporte = None
 try:
     with ruta_requisitos.open(
         "r", encoding="utf-8-sig", newline=""
     ) as archivo_csv:
         lector = csv.DictReader(archivo_csv)
         requisitos_reporte = list(lector)
+    ids_requisitos_reporte = ids_de_requisitos(requisitos_reporte)
 
     if requisitos_reporte:
         tabla_requisitos_reporte = [
@@ -1285,7 +1299,9 @@ try:
         lector = csv.DictReader(archivo_csv)
         evidencias_reporte = list(lector)
 
-    if evidencias_reporte:
+    if ids_requisitos_reporte is None:
+        st.warning("No se pudo verificar la vinculacion sin el catalogo de requisitos.")
+    elif evidencias_reporte:
         tabla_evidencias_reporte = [
             {
                 "ID de evidencia": fila.get(
@@ -1300,12 +1316,8 @@ try:
                 "Ubicacion": fila.get(
                     "ubicacion", ""
                 ),
-                "Situacion documental": (
-                    "Pendiente de vinculacion"
-                    if fila.get(
-                        "requisito_id", ""
-                    ).strip() in ("", "Sin asignar")
-                    else "Vinculada"
+                "Situacion documental": estado_vinculacion(
+                    fila.get("requisito_id"), ids_requisitos_reporte
                 ),
                 "Validacion del especialista": fila.get(
                     "validacion_especialista", ""
@@ -1443,6 +1455,7 @@ def preparar_reporte_word():
         lector = csv.DictReader(archivo_csv)
         requisitos_word = list(lector)
 
+    ids_requisitos_word = ids_de_requisitos(requisitos_word)
     if requisitos_word:
         tabla = documento.add_table(
             rows=1,
@@ -1539,14 +1552,8 @@ def preparar_reporte_word():
         for fila in evidencias_word:
             celdas = tabla_evidencias.add_row().cells
 
-            requisito_asociado = fila.get(
-                "requisito_id", ""
-            ).strip()
-
-            if requisito_asociado in ("", "Sin asignar"):
-                situacion = "Pendiente de vinculacion"
-            else:
-                situacion = "Vinculada"
+            requisito_asociado = (fila.get("requisito_id") or "").strip()
+            situacion = estado_vinculacion(requisito_asociado, ids_requisitos_word)
 
             celdas[0].text = fila.get(
                 "evidencia_id", ""
